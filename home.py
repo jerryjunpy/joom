@@ -142,8 +142,10 @@ class JoomSpider(object):
 
         self.sheet_name2 = self.db_name["mer_test"]
 
+        self.sheet_name3 = self.db_name["cate_test"]
+
         self.client_es = Elasticsearch(hosts=["http://..../",
-                                              "http://.../", "http://.../"])
+                                              "http:/..../", "http://..../"])
 
         self.param = {
             'levels': '1',
@@ -162,7 +164,7 @@ class JoomSpider(object):
             'currency': 'USD'
         }  # 获取评论的请求体
 
-        self.redis_client = redis.Redis(host='...', port=6379, db=1)
+        self.redis_client = redis.Redis(host='....', port=6379, db=1)
 
     def load_index_categories(self):
 
@@ -256,7 +258,7 @@ class JoomSpider(object):
             print("%s 类有　%d 商品" % (categories_name, len(joomid_list)))
 
             # 创建线程的线程池
-            pool = Pool(10)
+            pool = Pool(15)
             # map()高阶函数，用来批量处理函数传参
             pool.map(self.get_token, joomid_list)
             # 关闭线程池
@@ -327,6 +329,8 @@ class JoomSpider(object):
 
         mer_info = {}  # 店铺信息
 
+        cate_info= {}
+
         print('开始获取{}中的商品：{}\n'.format(self.categories_name, joomid))
 
         det_url = "https://api.joom.com/1.1/products/" + joomid + "?language=en&currency=USD"
@@ -343,6 +347,28 @@ class JoomSpider(object):
 
             pro_basic = self.get_cate(categoryId)
 
+            cate_info['catename'] = pro_basic['catename']
+
+            cate_info['categoryId'] = pro_basic['categoryId']
+
+            mer_info['catename'] = pro_basic['catename']
+
+            mer_info['categoryId'] = pro_basic['categoryId']
+
+            for i in pro_basic['parents'][-1:]:
+
+                cate_info['top_categoryId'] = i['id']
+
+                cate_info['top_catename'] = i['name']
+
+                mer_info['top_categoryId'] = i['id']
+
+                mer_info['top_catename'] = i['name']
+
+                pro_basic['top_categoryId'] = i['id']
+
+                pro_basic['top_catename'] = i['name']
+
             # 商品评论总数
             reviews_count = result.get('reviewsCount').get('value')
 
@@ -357,7 +383,7 @@ class JoomSpider(object):
 
                 try:
 
-                    while reviews_count < 100 and total < 350:  # 直到读取次数大于3或者评分大于100
+                    while reviews_count < 100 and total < 3:  # 直到读取次数大于３或者评分大于100
 
                         total += 1
 
@@ -381,8 +407,12 @@ class JoomSpider(object):
 
             pro_basic['reviews_count'] = int(reviews_count)
 
+            cate_info['reviews_count'] = int(reviews_count)
+
             # 商品id
             pro_basic['joomid'] = joomid
+
+            cate_info['joomid'] = joomid
 
             # 上架时间
             timeStamp = int(joomid[0:10])
@@ -392,10 +422,10 @@ class JoomSpider(object):
             pro_basic["arrival_time"] = arrival_time
 
             # 商品链接
-            pro_basic["goods_link"] = self.base_url + result["id"]
+            pro_basic["goods_link"] = 'https://www.joom.com/en/products/' + joomid
 
             # 店铺ID
-            pro_basic['storeId'] = mer_info['storeId'] = result.get('storeId')
+            pro_basic['storeId'] = mer_info['storeId'] = cate_info['storeId']= result.get('storeId')
 
             # 商品描述
             pro_basic["description"] = result.get("description")
@@ -432,7 +462,7 @@ class JoomSpider(object):
             pro_basic['sales_count'] = int(goods_info.get('salesCount').get('value'))
 
             # 商品价格
-            pro_basic["price"] = goods_info.get('price')
+            pro_basic["price"] = mer_info["price"] = cate_info["price"] = goods_info.get('price')
 
             # 商品是否打折
             pro_basic['discount'] = goods_info.get('discount')
@@ -496,12 +526,14 @@ class JoomSpider(object):
             # 店铺是否认证
             mer_info['reviewsCount'] = shop_info.get('reviewsCount').get('value')
 
-            pro_basic['present'] = mer_info['present'] = present
+            pro_basic['present'] = mer_info['present'] = cate_info['present'] = present
 
             try:
                 self.sheet_name2.insert(dict(mer_info))  # 插入mongo
 
                 self.sheet_name.insert(dict(pro_basic))
+
+                self.sheet_name3.insert_one(dict(cate_info))
 
             except Exception as e:
 
@@ -513,11 +545,13 @@ class JoomSpider(object):
 
                 pro_resunt = self.client_es.index(index='joom_pro', doc_type='pro_datas', body=dict(pro_basic))  # 商品信息
 
-                print(pro_resunt)
+                # print(pro_resunt)
 
                 mer_result = self.client_es.index(index='joom_mer', doc_type='mer_datas', body=dict(mer_info))  # 店铺信息
 
-                print(mer_result)
+                # print(mer_result)
+
+                self.client_es.index(index="joom_cate", doc_type="cate_datas", body=dict(cate_info))
 
                 print('商品{}写入ES成功\n'.format(joomid))
 
@@ -547,6 +581,7 @@ class JoomSpider(object):
         :param UA:
         :return: 获取评论大于100的商品详细评论数
         """
+        # accessToken = self.redis_client.srandmember('token', 1)[0].decode()  # 每次更换token
 
         reviews_url = "https://api.joom.com/1.1/products/" + joomid + "/reviews?"
 
@@ -584,7 +619,7 @@ class JoomSpider(object):
 
                 self.reviews_param['pageToken'] = result  # 在请求参数中添加pagetoken
 
-                seconds = [0.6, 0.8, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 0.1, 0.2, 0.3, 0.4]
+                seconds = [0.1, 0.2, 0.3, 0.1, 0.2]
 
                 time.sleep((random.choice(seconds)))
 
